@@ -1,0 +1,42 @@
+version: '3.8'
+services:
+  # 网站1：占用8081端口
+  website-1:
+    build: .
+    container_name: bible-website-1
+    restart: always
+    ports:
+      - "8081:80"  # 本地访问：http://localhost:8081
+    volumes:
+      - D:\Code\bible:/usr/share/nginx/html  # 绑定本地代码文件夹
+    networks:
+      - bible-network
+
+  # 网站2：占用8082端口
+  website-2:
+    build: .
+    container_name: bible-website-2
+    restart: always
+    ports:
+      - "8082:80"  # 本地访问：http://localhost:8082
+    volumes:
+      - D:\Code\bible:/usr/share/nginx/html
+    networks:
+      - bible-network
+
+  # 网站3：占用8083端口
+  website-3:
+    build: .
+    container_name: bible-website-3
+    restart: always
+    ports:
+      - "8083:80"  # 本地访问：http://localhost:8083
+    volumes:
+      - D:\Code\bible:/usr/share/nginx/html
+    networks:
+      - bible-network
+
+# 自定义网络（让3个容器互通，非必需但规范）
+networks:
+  bible-network:
+    driver: bridge
