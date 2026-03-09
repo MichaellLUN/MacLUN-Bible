@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "node-fetch": "^2.7.0",
+    "opencc-js": "^1.0.5"
+  }
+}

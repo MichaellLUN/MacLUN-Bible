@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>圣经查阅 - 极简阅读器</title>
+    <script>
+        window.addEventListener('error', function (e) {
+            const errObj = e.error || e;
+            const msg = (e.message || 'Error occurred') + '\n' + (e.filename || 'unknown script') + ':' + (e.lineno || '?') + ':' + (e.colno || '?') + '\n' + (errObj ? (errObj.stack || '') : '');
+            showCrashReport(msg);
+        });
+        function showCrashReport(msg) {
+            if (document.body) {
+                let div = document.getElementById('crash-report');
+                if (!div) {
+                    div = document.createElement('div');
+                    div.id = 'crash-report';
+                    div.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:white;z-index:99999;padding:2rem;overflow:auto;box-sizing:border-box;';
+                    document.body.appendChild(div);
+                }
+                div.innerHTML = '<h1 style="color:red;">CRASH REPORT</h1><pre style="white-space:pre-wrap; border:1px solid #ccc; padding:1rem; background:#f9f9f9;">' + msg + '</pre>';
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <meta name="theme-color" content="#ffffff">
+</head>
+
+<body>
+
+    <div id="app">
+        <!-- 侧边栏及遮罩 -->
+        <div class="overlay" id="overlay"></div>
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>目录</h2>
+                <button class="icon-btn" id="closeSidebarBtn" title="关闭目录">
+                    <i class="ri-close-line"></i>
+                </button>
+            </div>
+
+            <div class="nav-tabs">
+                <button class="tab-btn active" data-testament="OT">旧约</button>
+                <button class="tab-btn" data-testament="NT">新约</button>
+            </div>
+
+            <div class="books-container">
+                <div id="bookListOT" class="book-list"></div>
+                <div id="bookListNT" class="book-list hidden"></div>
+            </div>
+
+            <div class="chapters-container hidden" id="chaptersContainer">
+                <div class="chapters-header">
+                    <button class="icon-btn" id="backToBooksBtn">
+                        <i class="ri-arrow-left-s-line"></i> 返回书卷
+                    </button>
+                    <span id="currentBookNameNav"></span>
+                </div>
+                <div class="chapter-grid" id="chapterGrid"></div>
+
+                <!-- 底部的节列表网格（同屏出现） -->
+                <div id="verseSectionSidebar" class="hidden"
+                    style="margin-top: 1rem; border-top: 1px dashed var(--border-color); padding-top: 0.8rem;">
+                    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-tertiary); margin-bottom: 0.5rem; padding: 0 0.5rem;"
+                        id="currentChapterNameNav"></div>
+                    <div class="chapter-grid" id="verseGrid"></div>
+                </div>
+            </div>
+
+        </aside>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <header class="header">
+                <div class="header-left">
+                    <button class="icon-btn menu-toggle" id="menuToggleBtn">
+                        <i class="ri-menu-line"></i>
+                    </button>
+                    <!-- 回书卷列表（所有尺寸下都显示）-->
+                    <button class="icon-btn" id="homeBtn" title="回到目录首页">
+                        <i class="ri-home-4-line"></i>
+                    </button>
+                    <h1 class="book-title" id="currentBookTitle">圣经查阅</h1>
+                </div>
+
+                <div class="header-right">
+                    <button class="icon-btn" id="langBtn" title="语言对照">
+                        <i class="ri-translate-2"></i>
+                    </button>
+                    <button class="icon-btn" id="searchBtn" title="搜索">
+                        <i class="ri-search-line"></i>
+                    </button>
+                    <button class="icon-btn" id="fontSizeBtn" title="字号">
+                        <i class="ri-font-size-2"></i>
+                    </button>
+                    <button class="icon-btn" id="themeToggleBtn" title="切换亮/暗色主题">
+                        <i class="ri-moon-line"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- 搜索面板 -->
+            <div class="search-panel hidden" id="searchPanel">
+                <div class="search-input-wrapper">
+                    <i class="ri-search-line search-icon"></i>
+                    <input type="text" id="searchInput" placeholder="搜索经文关键词 (如: 神爱世人)">
+                    <button class="icon-btn" id="closeSearchBtn">
+                        <i class="ri-close-line"></i>
+                    </button>
+                </div>
+                <div class="search-results" id="searchResults"></div>
+            </div>
+
+            <!-- 字号调节面板 -->
+            <div class="tool-panel hidden" id="fontPanel">
+                <i class="ri-font-size" style="font-size: 14px;"></i>
+                <input type="range" id="fontSizeRange" min="14" max="32" value="18" step="2">
+                <i class="ri-font-size" style="font-size: 24px;"></i>
+            </div>
+
+            <!-- 语言选择面板 -->
+            <div class="tool-panel hidden" id="langPanel"
+                style="flex-direction: column; align-items: stretch; gap: 0.5rem;">
+                <div
+                    style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; display: flex; justify-content: space-between;">
+                    <span>选择语言 (最多两项)</span>
+                    <i class="ri-close-line" id="closeLangBtn" style="cursor: pointer; font-size: 1.2rem;"></i>
+                </div>
+                <div class="lang-options">
+                    <label class="lang-option"><input type="checkbox" value="zh-cn" class="lang-checkbox" checked>
+                        简体中文</label>
+                    <label class="lang-option"><input type="checkbox" value="zh-tw" class="lang-checkbox"> 繁体中文</label>
+                    <label class="lang-option"><input type="checkbox" value="en" class="lang-checkbox"> English
+                        (KJV)</label>
+                    <label class="lang-option"><input type="checkbox" value="ko" class="lang-checkbox"> 한국어 (韩文)</label>
+                    <label class="lang-option" style="opacity:0.5;" title="日文数据暂无开源">
+                        <input type="checkbox" value="ja" class="lang-checkbox" disabled> 日本語 &middot; 敬请期待
+                    </label>
+                </div>
+            </div>
+
+            <!-- 经文内容区 -->
+            <article class="reader" id="readerContent">
+                <div class="reader-container" id="versesContainer">
+                    <div class="loading-state" id="loadingState">
+                        <i class="ri-loader-4-line ri-spin"></i> &nbsp; 正在加载数据...
+                    </div>
+                </div>
+            </article>
+
+            <!-- 底部章节导航 -->
+            <nav class="bottom-nav hidden" id="bottomNav">
+                <button class="nav-btn" id="prevChapterBtn">
+                    <i class="ri-arrow-left-s-line"></i> 上一章
+                </button>
+                <div class="nav-info" id="navInfo">
+                    --
+                </div>
+                <button class="nav-btn" id="nextChapterBtn">
+                    下一章 <i class="ri-arrow-right-s-line"></i>
+                </button>
+            </nav>
+        </main>
+
+        <!-- 弹窗提示 -->
+        <div class="toast" id="toast">操作成功</div>
+    </div>
+
+    <script src="cuv.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>
