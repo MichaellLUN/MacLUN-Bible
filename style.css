@@ -783,6 +783,8 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
     .verse {
         padding: 0.25rem 0;
+        padding-right: 2rem;
+        /* Add clear space for the copy button */
     }
 
     .reader {

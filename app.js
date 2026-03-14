@@ -50,7 +50,8 @@ const els = {
 
 // 全局状态
 const state = {
-    bibleData: null,          // 当前默认主数据 (zh-cn)
+    catalog: null,            // 书卷目录
+    bookCache: {},            // 缓存的各个语言的书卷数据 bookCache['zh-cn'][0] = ...
     currentBookIndex: 0,
     currentChapterIndex: 0,
     searchDebounceTimer: null,
@@ -160,23 +161,64 @@ async function init() {
     }
 }
 
-// 加载JSON数据
+// 加载JSON数据 (现改为直接读取 JSONP 注入的 catalog)
 async function loadBibleData() {
-    els.versesContainer.innerHTML = '<div class="loading-state"><i class="ri-loader-4-line ri-spin"></i> &nbsp; 正在加载圣经数据...</div>';
+    els.versesContainer.innerHTML = '<div class="loading-state"><i class="ri-loader-4-line ri-spin"></i> &nbsp; 正在读取目录...</div>';
 
+    // 我们等一小会儿确保 index.html 里的 script 标签已经成功执行加载
     return new Promise((resolve, reject) => {
-        setTimeout(() => {
-            if (window.bibleDataLocales) {
-                // 默认拿中简作为主索引
-                state.bibleData = window.bibleDataLocales['zh-cn'] || window.bibleDataLocales['zh-tw'];
+        let attempts = 0;
+        const checkCatalog = setInterval(() => {
+            if (window.bibleCatalog) {
+                clearInterval(checkCatalog);
+                state.catalog = window.bibleCatalog;
                 resolve();
-            } else if (window.bibleData) {
-                state.bibleData = window.bibleData;
-                resolve();
-            } else {
-                reject(new Error('未找到纯静态圣经数据 window.bibleData'));
+            } else if (attempts > 50) { // 约 2.5 秒超时
+                clearInterval(checkCatalog);
+                reject(new Error('无法读取目录数据 (catalog.js未加载)'));
             }
-        }, 300);
+            attempts++;
+        }, 50);
+    });
+}
+
+// 工具：通过动态创建 script 标签加载 JS 变通解决跨域
+function fetchBookData(lang, bookIndex) {
+    if (!state.bookCache[lang]) state.bookCache[lang] = {};
+    if (state.bookCache[lang][bookIndex]) return Promise.resolve(state.bookCache[lang][bookIndex]);
+
+    return new Promise((resolve) => {
+        const scriptId = `bible-data-${lang}-${bookIndex}`;
+        if (document.getElementById(scriptId)) {
+            // 请求已发出，但因网络还没回来，重试看 Cache
+            setTimeout(() => { resolve(fetchBookData(lang, bookIndex)); }, 100);
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.id = scriptId;
+        script.src = `data/cuv/${lang}/${bookIndex}.js`;
+
+        // 绑定一个全局的回调钩子，由生成的数据 .js 在自身末尾或者主动调用
+        if (!window.__bibleDataCb) {
+            window.__bibleDataCb = function (cbLang, cbIndex, cbData) {
+                if (!state.bookCache[cbLang]) state.bookCache[cbLang] = {};
+                state.bookCache[cbLang][cbIndex] = cbData;
+            };
+        }
+
+        script.onload = () => {
+            // 加载成功后，window.__bibleDataCb 应该已经被 .js 调用并填入了书卷缓存
+            resolve(state.bookCache[lang][bookIndex] || null);
+            script.remove(); // 清理 DOM
+        };
+        script.onerror = (e) => {
+            console.error(`Failed to fetch ${lang} JS book ${bookIndex}`, e);
+            resolve(null);
+            script.remove();
+        };
+
+        document.body.appendChild(script);
     });
 }
 
@@ -256,6 +298,8 @@ function bindEvents() {
         els.fontPanel.classList.add('hidden');
         langPanel.classList.add('hidden');
         if (!els.searchPanel.classList.contains('hidden')) {
+            els.searchInput.value = ''; // 清空输入框
+            showSearchHistory(); // 展示历史搜索记录
             els.searchInput.focus();
         }
     });
@@ -361,7 +405,7 @@ function initLanguageSelector() {
             localStorage.setItem('selectedLangs', JSON.stringify(state.selectedLangs));
 
             // 立即重载当前章节
-            if (state.bibleData) {
+            if (state.catalog) {
                 loadChapter(state.currentBookIndex, state.currentChapterIndex);
             }
         });
@@ -370,7 +414,7 @@ function initLanguageSelector() {
 
 // 渲染书卷列表
 function renderBookList() {
-    if (!Array.isArray(state.bibleData)) return;
+    if (!Array.isArray(state.catalog)) return;
 
     let otHtml = '';
     let ntHtml = '';
@@ -414,8 +458,8 @@ function renderBookList() {
 
 // 显示某一卷的章节列表
 function showChapters(bookIndex) {
-    const book = state.bibleData[bookIndex];
-    if (!book) return;
+    const bookMeta = state.catalog[bookIndex];
+    if (!bookMeta) return;
 
     els.currentBookNameNav.textContent = ALL_BOOKS[bookIndex];
     els.booksContainer.style.display = 'none';
@@ -425,7 +469,7 @@ function showChapters(bookIndex) {
     // 给选中的章加一个 active 状态清空机制
     els.chapterGrid.querySelectorAll('.chapter-item').forEach(b => b.classList.remove('active'));
 
-    const chapterCount = book.chapters.length;
+    const chapterCount = bookMeta.chaptersCount;
     let html = '';
     for (let i = 0; i < chapterCount; i++) {
         html += `<button class="chapter-item" data-book="${bookIndex}" data-chapter="${i}">${i + 1}</button>`;
@@ -444,7 +488,8 @@ function showChapters(bookIndex) {
             els.chapterGrid.querySelectorAll('.chapter-item').forEach(b => b.classList.remove('active'));
             e.target.classList.add('active'); // 当前章加上高亮(深蓝色之类的)
 
-            showVersesInSidebar(bIdx, cIdx);
+            // 节列表会在加载详情后渲染
+            // showVersesInSidebar(bIdx, cIdx);
 
             // 加载正文（在背景偷偷加载好）
             loadChapter(bIdx, cIdx);
@@ -453,14 +498,9 @@ function showChapters(bookIndex) {
 }
 
 // 在侧边栏显示节列表
-function showVersesInSidebar(bookIndex, chapterIndex) {
-    const book = state.bibleData[bookIndex];
-    if (!book || !book.chapters || !book.chapters[chapterIndex]) return;
-
+function showVersesInSidebar(bookIndex, chapterIndex, verseCount) {
     els.currentChapterNameNav.textContent = `当前所在：${ALL_BOOKS[bookIndex]} ${chapterIndex + 1}章 (请选节)`;
     if (els.verseSectionSidebar) els.verseSectionSidebar.classList.remove('hidden');
-
-    const verseCount = book.chapters[chapterIndex].length;
     let html = '';
     for (let i = 0; i < verseCount; i++) {
         html += `<button class="chapter-item verse-item-btn" data-v="${i}">${i + 1}</button>`;
@@ -512,22 +552,35 @@ function goHome() {
 }
 
 // 加载并显示具体章节内容
-function loadChapter(bookIndex, chapterIndex) {
-    if (!state.bibleData) return;
+async function loadChapter(bookIndex, chapterIndex) {
+    if (!state.catalog) return;
 
     state.currentBookIndex = bookIndex;
     state.currentChapterIndex = chapterIndex;
 
-    const book = state.bibleData[bookIndex];
-    if (!book || !book.chapters || !book.chapters[chapterIndex]) return; // 容错处理
+    const bookMeta = state.catalog[bookIndex];
+    if (!bookMeta || chapterIndex < 0 || chapterIndex >= bookMeta.chaptersCount) return;
 
-    const chapterLength = book.chapters[chapterIndex].length;
+    els.versesContainer.innerHTML = '<div class="loading-state"><i class="ri-loader-4-line ri-spin"></i> &nbsp; 加载中...</div>';
 
-    // 头部标题
+    const promises = state.selectedLangs.map(lang => fetchBookData(lang, bookIndex));
+    const booksData = await Promise.all(promises);
+
+    let chapterLength = 0;
+    for (let bd of booksData) {
+        if (bd && bd.chapters && bd.chapters[chapterIndex]) {
+            chapterLength = Math.max(chapterLength, bd.chapters[chapterIndex].length);
+        }
+    }
+
+    if (chapterLength === 0) {
+        els.versesContainer.innerHTML = '<div class="loading-state">本章数据加载失败或为空。</div>';
+        return;
+    }
+
     const bookName = ALL_BOOKS[bookIndex];
     els.currentBookTitle.textContent = `${bookName}第${chapterIndex + 1}章`;
 
-    // 渲染经文 (支持多语言双排)
     let html = `<div class="reader-header"><h1>${bookName} ${chapterIndex + 1}</h1></div>`;
 
     for (let vIndex = 0; vIndex < chapterLength; vIndex++) {
@@ -537,15 +590,12 @@ function loadChapter(bookIndex, chapterIndex) {
                         <div style="flex:1;">`;
 
         // 遍历目前所选的最多2个语言
-        state.selectedLangs.forEach(langCode => {
-            const db = window.bibleDataLocales && window.bibleDataLocales[langCode];
-
-            // 如果该语言数据不存在或为空数组，直接跳过，不渲染错误占位
-            if (!db || !Array.isArray(db) || db.length === 0) return;
-
+        state.selectedLangs.forEach((langCode, index) => {
+            const db = booksData[index];
+            if (!db || !db.chapters || !db.chapters[chapterIndex]) return;
             let verseText = "";
             try {
-                verseText = db[bookIndex].chapters[chapterIndex][vIndex];
+                verseText = db.chapters[chapterIndex][vIndex];
             } catch (e) {
                 verseText = ""; // 结构不匹配时静默跳过
             }
@@ -572,6 +622,10 @@ function loadChapter(bookIndex, chapterIndex) {
 
     // 更新侧边栏状态
     updateSidebarActiveState();
+
+    if (!els.chaptersContainer.classList.contains('hidden') && els.verseSectionSidebar) {
+        showVersesInSidebar(bookIndex, chapterIndex, chapterLength);
+    }
 }
 
 function updateSidebarActiveState() {
@@ -595,8 +649,8 @@ function updateBottomNav() {
     // 判断是否可上/下导航
     const isFirstBook = state.currentBookIndex === 0;
     const isFirstChapter = state.currentChapterIndex === 0;
-    const isLastBook = state.currentBookIndex === state.bibleData.length - 1;
-    const isLastChapter = state.currentChapterIndex === state.bibleData[state.currentBookIndex].chapters.length - 1;
+    const isLastBook = state.currentBookIndex === state.catalog.length - 1;
+    const isLastChapter = state.currentChapterIndex === state.catalog[state.currentBookIndex].chaptersCount - 1;
 
     els.prevChapterBtn.disabled = isFirstBook && isFirstChapter;
     els.nextChapterBtn.disabled = isLastBook && isLastChapter;
@@ -609,12 +663,12 @@ function navigateChapter(direction) {
     if (nextCIdx < 0) {
         if (nextBIdx > 0) {
             nextBIdx--;
-            nextCIdx = state.bibleData[nextBIdx].chapters.length - 1;
+            nextCIdx = state.catalog[nextBIdx].chaptersCount - 1;
         } else {
             return; // 已经是开端
         }
-    } else if (nextCIdx >= state.bibleData[nextBIdx].chapters.length) {
-        if (nextBIdx < state.bibleData.length - 1) {
+    } else if (nextCIdx >= state.catalog[nextBIdx].chaptersCount) {
+        if (nextBIdx < state.catalog.length - 1) {
             nextBIdx++;
             nextCIdx = 0;
         } else {
@@ -625,31 +679,53 @@ function navigateChapter(direction) {
     loadChapter(nextBIdx, nextCIdx);
 }
 
-// 搜索功能 (内存中遍历)
+let isSearchIndexLoading = false;
+
+// 搜索功能 (全域搜)
 function performSearch(query) {
-    if (!query || query.length < 2) {
-        els.searchResults.innerHTML = '';
+    if (!query || query.trim().length === 0) {
+        showSearchHistory();
         return;
     }
 
-    els.searchResults.innerHTML = '<div class="loading-state" style="font-size: 0.9rem;">搜索中...</div>';
+    if (!window.__bibleSearchIndex) {
+        els.searchResults.innerHTML = '<div class="loading-state" style="font-size: 0.9rem;">正在加载全库搜索引擎配置...</div>';
+
+        if (isSearchIndexLoading) return;
+        isSearchIndexLoading = true;
+
+        const script = document.createElement('script');
+        script.src = 'data/cuv/search_index.js';
+        script.onload = () => {
+            isSearchIndexLoading = false;
+            executeGlobalSearch(query);
+        };
+        script.onerror = () => {
+            isSearchIndexLoading = false;
+            els.searchResults.innerHTML = '<div style="text-align:center;padding:1rem;">搜索组件加载失败，请检查网络或配置</div>';
+        };
+        document.body.appendChild(script);
+    } else {
+        executeGlobalSearch(query);
+    }
+}
+
+function executeGlobalSearch(query) {
+    els.searchResults.innerHTML = '<div class="loading-state" style="font-size: 0.9rem;">全局检索中...</div>';
 
     setTimeout(() => {
         const results = [];
-        const maxResults = 50; // 限制返回结果数，防卡死
-
-        // 搜索统一去主语言(第一个选中的语言，或默认中文)检索
-        const searchDB = window.bibleDataLocales && window.bibleDataLocales[state.selectedLangs[0]]
-            ? window.bibleDataLocales[state.selectedLangs[0]]
-            : state.bibleData;
+        const maxResults = 50;
+        const searchDB = window.__bibleSearchIndex || [];
 
         for (let b = 0; b < searchDB.length; b++) {
             const book = searchDB[b];
+            if (!book || !book.chapters) continue;
             for (let c = 0; c < book.chapters.length; c++) {
                 const chapter = book.chapters[c];
                 for (let v = 0; v < chapter.length; v++) {
                     const text = chapter[v];
-                    if (text.includes(query)) {
+                    if (text && text.includes(query)) {
                         results.push({
                             bIdx: b,
                             cIdx: c,
@@ -665,8 +741,54 @@ function performSearch(query) {
             if (results.length >= maxResults) break;
         }
 
+        saveSearchHistory(query);
         renderSearchResults(results, query);
     }, 10);
+}
+
+function getSearchHistory() {
+    try {
+        return JSON.parse(localStorage.getItem('bible_search_history')) || [];
+    } catch { return []; }
+}
+
+function saveSearchHistory(query) {
+    let history = getSearchHistory();
+    history = history.filter(q => q !== query);
+    history.unshift(query);
+    if (history.length > 10) history.pop(); // Keep top 10
+    localStorage.setItem('bible_search_history', JSON.stringify(history));
+}
+
+function showSearchHistory() {
+    const history = getSearchHistory();
+    if (history.length === 0) {
+        els.searchResults.innerHTML = '<div style="padding:1rem;color:var(--text-tertiary);text-align:center;">暂无搜索记录，请输入关键词开始</div>';
+        return;
+    }
+
+    let html = '<div style="padding:0.5rem 1rem;font-size:0.85rem;color:var(--text-tertiary);display:flex;justify-content:space-between;"><span>搜索历史</span><button style="color:var(--primary-color);font-size:0.85rem;" onclick="clearSearchHistory()">清空</button></div>';
+
+    html += '<div style="padding:0 1rem;display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem;">';
+    history.forEach(q => {
+        html += `<span class="history-tag" style="background:var(--hover-bg);padding:0.3rem 0.6rem;border-radius:1rem;font-size:0.85rem;cursor:pointer;color:var(--primary-color)">${q}</span>`;
+    });
+    html += '</div>';
+
+    els.searchResults.innerHTML = html;
+
+    els.searchResults.querySelectorAll('.history-tag').forEach(tag => {
+        tag.addEventListener('click', (e) => {
+            const q = e.target.textContent;
+            els.searchInput.value = q;
+            performSearch(q);
+        });
+    });
+}
+
+window.clearSearchHistory = function () {
+    localStorage.removeItem('bible_search_history');
+    showSearchHistory();
 }
 
 function renderSearchResults(results, query) {
@@ -674,7 +796,6 @@ function renderSearchResults(results, query) {
         els.searchResults.innerHTML = '<div style="padding: 1rem; color: var(--text-tertiary); text-align: center;">未找到相关经文</div>';
         return;
     }
-
     let html = '';
     results.forEach(res => {
         // 高亮关键词

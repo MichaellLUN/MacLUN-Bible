@@ -168,8 +168,8 @@
         <!-- 弹窗提示 -->
         <div class="toast" id="toast">操作成功</div>
     </div>
-
-    <script src="cuv.js"></script>
+    <!-- 加载应用核心逻辑之前，提前载入书卷目录 (解决本地跨域问题) -->
+    <script src="data/cuv/catalog.js"></script>
     <script src="app.js"></script>
 </body>
 
