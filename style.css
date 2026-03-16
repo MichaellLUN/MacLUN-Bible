@@ -506,8 +506,7 @@ button {
 
 .verse {
     margin-bottom: 0.8rem;
-    /* Slightly tighter verse separation */
-    padding: 0.5rem 0.8rem;
+    padding: 0.5rem 3rem 0.5rem 0.8rem; /* Right padding of 3rem for the copy button */
     position: relative;
     border-radius: 8px;
     transition: background-color 0.2s;
@@ -782,9 +781,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
     }
 
     .verse {
-        padding: 0.25rem 0;
-        padding-right: 2rem;
-        /* Add clear space for the copy button */
+        padding: 0.5rem 3rem 0.5rem 0; /* Clear space for the copy button on mobile */
     }
 
     .reader {
