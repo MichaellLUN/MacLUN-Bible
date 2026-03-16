@@ -297,9 +297,21 @@ function bindEvents() {
         els.searchPanel.classList.toggle('hidden');
         els.fontPanel.classList.add('hidden');
         langPanel.classList.add('hidden');
+
         if (!els.searchPanel.classList.contains('hidden')) {
-            els.searchInput.value = ''; // 清空输入框
-            showSearchHistory(); // 展示历史搜索记录
+            // 根据当前首选语言更新 Placeholder
+            const mainLang = state.selectedLangs[0] || 'zh-cn';
+            const placeholders = {
+                'ja': '例: はじめに (太初)',
+                'en': 'e.g. God so loved',
+                'ko': '예: 하나님이 세상을',
+                'zh-cn': '如: 神爱世人',
+                'zh-tw': '如: 神愛世人'
+            };
+            els.searchInput.placeholder = placeholders[mainLang] || placeholders['zh-cn'];
+
+            els.searchInput.value = ''; // 切换时清空
+            showSearchHistory();
             els.searchInput.focus();
         }
     });
@@ -373,13 +385,6 @@ function initFontSize() {
 // 初始化语言选择器事件
 function initLanguageSelector() {
     const checkboxes = document.querySelectorAll('.lang-checkbox');
-
-    // 如果 localStorage 里有旧的 ja 选中记录，先清除
-    if (state.selectedLangs.includes('ja')) {
-        state.selectedLangs = state.selectedLangs.filter(l => l !== 'ja');
-        if (state.selectedLangs.length === 0) state.selectedLangs = ['zh-cn'];
-        localStorage.setItem('selectedLangs', JSON.stringify(state.selectedLangs));
-    }
 
     // 同步初始化选中状态
     checkboxes.forEach(cb => {
@@ -680,6 +685,7 @@ function navigateChapter(direction) {
 }
 
 let isSearchIndexLoading = false;
+window.__bibleSearchIndexLang = 'zh-cn'; // 默认初始为中文索引
 
 // 搜索功能 (全域搜)
 function performSearch(query) {
@@ -688,22 +694,42 @@ function performSearch(query) {
         return;
     }
 
+    const mainLang = state.selectedLangs[0] || 'zh-cn';
+    // 强制校验语言标识。如果语言不匹配，先销毁旧索引，保证加载正确语言
+    if (window.__bibleSearchIndexLang !== mainLang) {
+        window.__bibleSearchIndex = null;
+    }
+
     if (!window.__bibleSearchIndex) {
-        els.searchResults.innerHTML = '<div class="loading-state" style="font-size: 0.9rem;">正在加载全库搜索引擎配置...</div>';
+        els.searchResults.innerHTML = `<div class="loading-state" style="font-size: 0.9rem;">正在加载[${mainLang}]全库索引...</div>`;
 
         if (isSearchIndexLoading) return;
         isSearchIndexLoading = true;
 
         const script = document.createElement('script');
-        script.src = 'data/cuv/search_index.js';
+        script.src = `data/cuv/search_index_${mainLang}.js?v=${Date.now()}`; // 加个随机数防止本地缓存（如果浏览器支持）
+
         script.onload = () => {
             isSearchIndexLoading = false;
+            window.__bibleSearchIndexLang = mainLang;
             executeGlobalSearch(query);
+            document.body.removeChild(script); // 加载完移除标签，保持DOM整洁
         };
         script.onerror = () => {
-            isSearchIndexLoading = false;
-            els.searchResults.innerHTML = '<div style="text-align:center;padding:1rem;">搜索组件加载失败，请检查网络或配置</div>';
-        };
+            // 最后退回到通用索引
+            const fallback = document.createElement('script');
+            fallback.src = 'data/cuv/search_index.js';
+            fallback.onload = () => {
+                isSearchIndexLoading = false;
+                window.__bibleSearchIndexLang = 'zh-cn';
+                executeGlobalSearch(query);
+            };
+            fallback.onerror = () => {
+                isSearchIndexLoading = false;
+                els.searchResults.innerHTML = '<div style="text-align:center;padding:1rem;">搜索索引加载失败</div>';
+            };
+            document.body.appendChild(fallback);
+        }
         document.body.appendChild(script);
     } else {
         executeGlobalSearch(query);
@@ -711,12 +737,24 @@ function performSearch(query) {
 }
 
 function executeGlobalSearch(query) {
-    els.searchResults.innerHTML = '<div class="loading-state" style="font-size: 0.9rem;">全局检索中...</div>';
+    els.searchResults.innerHTML = '<div class="loading-state" style="font-size: 0.9rem;">正在检索全库(100%离线)...</div>';
 
     setTimeout(() => {
+        // 1. 预处理查询
+        const originalKeywords = query.trim().toLowerCase().split(/\s+/).filter(k => k.length > 0);
+        if (originalKeywords.length === 0) return;
+
+        // 辅助函数：去除标点符号
+        const clean = (s) => (s || '').replace(/[\p{P}\p{S}\s]/gu, '').toLowerCase();
+
+        // 生成纯净的关键词列表用于匹配
+        const searchKeywords = originalKeywords.map(k => clean(k)).filter(k => k.length > 0);
+        if (searchKeywords.length === 0) return;
+
         const results = [];
-        const maxResults = 50;
+        const maxResults = 100;
         const searchDB = window.__bibleSearchIndex || [];
+        let totalCount = 0;
 
         for (let b = 0; b < searchDB.length; b++) {
             const book = searchDB[b];
@@ -724,25 +762,34 @@ function executeGlobalSearch(query) {
             for (let c = 0; c < book.chapters.length; c++) {
                 const chapter = book.chapters[c];
                 for (let v = 0; v < chapter.length; v++) {
-                    const text = chapter[v];
-                    if (text && text.includes(query)) {
-                        results.push({
-                            bIdx: b,
-                            cIdx: c,
-                            vIdx: v,
-                            ref: `${ALL_BOOKS[b]} ${c + 1}:${v + 1}`,
-                            text: text
-                        });
-                        if (results.length >= maxResults) break;
+                    const originalText = chapter[v];
+                    if (!originalText) continue;
+
+                    // 将原文清理，解决标点符号分割长句的问题
+                    const cleanText = clean(originalText);
+
+                    // 只要经文中包含所有的关键词（顺序不敏感，跨标点敏感）
+                    const isMatched = searchKeywords.every(kw => cleanText.includes(kw));
+
+                    if (isMatched) {
+                        totalCount++;
+                        if (results.length < maxResults) {
+                            results.push({
+                                bIdx: b,
+                                cIdx: c,
+                                vIdx: v,
+                                ref: `${ALL_BOOKS[b]} ${c + 1}:${v + 1}`,
+                                text: originalText
+                            });
+                        }
                     }
                 }
-                if (results.length >= maxResults) break;
             }
-            if (results.length >= maxResults) break;
         }
 
         saveSearchHistory(query);
-        renderSearchResults(results, query);
+        // 渲染高亮时使用原始关键词
+        renderSearchResults(results, originalKeywords, totalCount);
     }, 10);
 }
 
@@ -791,15 +838,23 @@ window.clearSearchHistory = function () {
     showSearchHistory();
 }
 
-function renderSearchResults(results, query) {
+function renderSearchResults(results, keywords, totalCount = 0) {
     if (results.length === 0) {
         els.searchResults.innerHTML = '<div style="padding: 1rem; color: var(--text-tertiary); text-align: center;">未找到相关经文</div>';
         return;
     }
-    let html = '';
+
+    // 将分词还原为显示文本，用于标题展示
+    const queryDisplay = keywords.join(' + ');
+    let html = `<div style="padding: 0.5rem 1rem; font-size: 0.85rem; color: var(--text-secondary); background: var(--bg-color); border-bottom: 1px solid var(--border-color); position: sticky; top: 0; z-index: 5;">包含 <span class="highlight" style="padding: 0 4px; border-radius: 4px;">${queryDisplay}</span> 的经文共计 <strong>${totalCount}</strong> 处</div>`;
+
     results.forEach(res => {
-        // 高亮关键词
-        const highlightedText = res.text.replace(new RegExp(query, 'gi'), match => `<span class="highlight">${match}</span>`);
+        // 多关键词高亮处理
+        let highlightedText = res.text;
+        keywords.forEach(kw => {
+            const regex = new RegExp(`(${kw})`, 'gi');
+            highlightedText = highlightedText.replace(regex, '<span class="highlight">$1</span>');
+        });
 
         html += `
             <div class="search-result-item" data-b="${res.bIdx}" data-c="${res.cIdx}" data-v="${res.vIdx}">
@@ -809,8 +864,8 @@ function renderSearchResults(results, query) {
         `;
     });
 
-    if (results.length === 50) {
-        html += '<div style="text-align: center; color: var(--text-tertiary); padding: 0.5rem; font-size: 0.85rem;">已达到最大显示数量，请尝试更精确的关键词</div>';
+    if (totalCount > results.length) {
+        html += `<div style="text-align: center; color: var(--text-tertiary); padding: 0.8rem; font-size: 0.85rem; background: var(--hover-bg); margin-top: 0.5rem;">为保证浏览顺畅，仅展示前 ${results.length} 条</div>`;
     }
 
     els.searchResults.innerHTML = html;
